@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,13 @@ func main() {
 		os.Getenv("BINANCE_SECRET_KEY"),
 		testnet,
 	)
+
+	portfolio := 10_000.0
+	if v := os.Getenv("PORTFOLIO_VALUE"); v != "" {
+		if p, err := strconv.ParseFloat(v, 64); err == nil && p > 0 {
+			portfolio = p
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -123,17 +131,36 @@ func main() {
 	mux.HandleFunc("GET /api/position", func(w http.ResponseWriter, r *http.Request) {
 		symbol := queryDefault(r, "symbol", "BTCUSDT")
 		baseAsset := exchange.BaseAsset(symbol)
-		base, err := ex.GetBalance(r.Context(), baseAsset)
-		if err != nil {
-			writeErr(w, err)
-			return
+
+		// Try Binance API for live balance; fall back to DB price
+		// so the dashboard still shows something useful when the
+		// API key doesn't work from inside Docker.
+		var base, usdt, price float64
+		var balanceErr error
+
+		base, balanceErr = ex.GetBalance(r.Context(), baseAsset)
+		if balanceErr != nil {
+			logger.Warn("binance balance unavailable, using DB fallback", "err", balanceErr)
+			base = 0
 		}
-		price, err := ex.GetTickerPrice(r.Context(), symbol)
+
+		price, err = ex.GetTickerPrice(r.Context(), symbol)
 		if err != nil {
-			writeErr(w, err)
-			return
+			// Fall back to the latest candle close price from DB.
+			dbPrice, dbErr := queryLastPrice(r.Context(), pool, symbol)
+			if dbErr != nil {
+				writeErr(w, fmt.Errorf("binance: %w; db fallback: %w", err, dbErr))
+				return
+			}
+			price = dbPrice
 		}
-		usdt, _ := ex.GetBalance(r.Context(), "USDT")
+
+		usdt, _ = ex.GetBalance(r.Context(), "USDT")
+		// If balance calls failed, estimate from portfolio env.
+		if balanceErr != nil {
+			usdt = portfolio
+		}
+
 		writeJSON(w, map[string]any{
 			"symbol":      symbol,
 			"base_asset":  baseAsset,
@@ -142,6 +169,7 @@ func main() {
 			"usdt":        usdt,
 			"total_usdt":  usdt + base*price,
 			"price":       price,
+			"live":        balanceErr == nil,
 		})
 	})
 

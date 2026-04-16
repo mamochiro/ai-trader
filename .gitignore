@@ -26,7 +26,8 @@ backtest/results/*.csv
 !backtest/results/.gitkeep
 *.pyc
 
-# Dev scripts with secrets
+# Dev scripts and runtime state
 test_api.sh
+.pids/
 
 # Docker volumes (managed by compose)

@@ -42,14 +42,17 @@ services:
       - "3010:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       timescaledb:
         condition: service_healthy
 
   # ── Go services ────────────────────────────────────────────────────
+  # All four share a single Docker image built once.
 
   feeder:
     build: .
+    image: ai-trader:local
     container_name: ai-trader-feeder
     command: feeder
     restart: unless-stopped
@@ -57,19 +60,16 @@ services:
     environment:
       DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      BINANCE_TESTNET: "true"
     depends_on:
       timescaledb:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
   signal:
     build: .
+    image: ai-trader:local
     container_name: ai-trader-signal
     command: signal
     restart: unless-stopped
@@ -78,20 +78,12 @@ services:
       DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
       REDIS_URL: redis://redis:6379/0
     depends_on:
-      timescaledb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       feeder:
         condition: service_started
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
   executor:
     build: .
+    image: ai-trader:local
     container_name: ai-trader-executor
     command: executor
     restart: unless-stopped
@@ -99,21 +91,14 @@ services:
     environment:
       DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      BINANCE_TESTNET: "true"
     depends_on:
-      timescaledb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       signal:
         condition: service_started
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
   api:
     build: .
+    image: ai-trader:local
     container_name: ai-trader-api
     command: api
     restart: unless-stopped
@@ -121,6 +106,7 @@ services:
     environment:
       DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      BINANCE_TESTNET: "true"
     ports:
       - "8080:8080"
     depends_on:

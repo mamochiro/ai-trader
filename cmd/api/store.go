@@ -169,3 +169,12 @@ FROM signals WHERE symbol = $1`, symbol).Scan(
 		&s.TotalSignals, &s.BuySignals, &s.SellSignals, &s.HoldSignals)
 	return s, err
 }
+
+// queryLastPrice returns the latest candle close price from the DB.
+func queryLastPrice(ctx context.Context, pool *pgxpool.Pool, symbol string) (float64, error) {
+	var price float64
+	err := pool.QueryRow(ctx,
+		`SELECT close FROM candles WHERE symbol = $1 ORDER BY time DESC LIMIT 1`,
+		symbol).Scan(&price)
+	return price, err
+}

@@ -223,9 +223,11 @@ async function fetchJSON(url) {
 async function loadPosition() {
   try {
     const pos = await fetchJSON(API + '/api/position');
-    document.getElementById('stat-portfolio').textContent = '$' + pos.total_usdt.toFixed(2);
-    document.getElementById('stat-btc').textContent = pos.btc.toFixed(5) + ' BTC';
-    document.getElementById('stat-btc').className = 'value ' + (pos.btc > 0 ? 'positive' : 'neutral');
+    if (pos.error) { console.error('position:', pos.error); return; }
+    const liveTag = pos.live ? '' : ' (est)';
+    document.getElementById('stat-portfolio').textContent = '$' + pos.total_usdt.toFixed(2) + liveTag;
+    document.getElementById('stat-btc').textContent = pos.base.toFixed(5) + ' ' + pos.base_asset;
+    document.getElementById('stat-btc').className = 'value ' + (pos.base > 0 ? 'positive' : 'neutral');
   } catch (e) {
     console.error('position error:', e);
   }
@@ -234,6 +236,7 @@ async function loadPosition() {
 async function loadStats() {
   try {
     const s = await fetchJSON(API + '/api/stats');
+    if (s.error) { console.error('stats:', s.error); return; }
     const pnlEl = document.getElementById('stat-pnl');
     pnlEl.textContent = (s.total_pnl >= 0 ? '+' : '') + '$' + s.total_pnl.toFixed(2);
     pnlEl.className = 'value ' + (s.total_pnl >= 0 ? 'positive' : 'negative');

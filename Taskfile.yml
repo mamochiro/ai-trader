@@ -6,11 +6,27 @@ vars:
 tasks:
   # ── Development ────────────────────────────────────────────────────
 
-  dev:
-    desc: Start all services (infra + Go containers)
+  up:
+    desc: Build and start everything (one command to rule them all)
     cmds:
       - "{{.COMPOSE}} up --build -d"
       - "{{.COMPOSE}} ps"
+      - |
+        echo ""
+        echo "All services are running:"
+        echo "  Dashboard:  http://localhost:8080"
+        echo "  Grafana:    http://localhost:3010  (admin/admin)"
+        echo "  TimescaleDB: localhost:5434"
+        echo "  Redis:       localhost:6381"
+        echo ""
+        echo "  task logs    — tail all logs"
+        echo "  task down    — stop everything"
+        echo ""
+
+  dev:
+    desc: Same as 'up' (alias)
+    cmds:
+      - task: up
 
   dev:infra:
     desc: Start infrastructure only (TimescaleDB, Redis, Grafana)
@@ -18,22 +34,57 @@ tasks:
       - "{{.COMPOSE}} up -d timescaledb redis grafana"
 
   dev:local:
-    desc: Start infra, then print instructions for running Go locally
+    desc: Start infra + all Go services locally (one command)
     cmds:
       - task: dev:infra
+      - task: dev:stop-local
       - |
+        echo "Starting Go services locally..."
+        mkdir -p .pids
+        nohup go run ./cmd/feeder   > /tmp/ai-trader-feeder.log   2>&1 & echo $! > .pids/feeder.pid
+        sleep 2
+        nohup go run ./cmd/signal   > /tmp/ai-trader-signal.log   2>&1 & echo $! > .pids/signal.pid
+        nohup go run ./cmd/executor > /tmp/ai-trader-executor.log 2>&1 & echo $! > .pids/executor.pid
+        nohup go run ./cmd/api      > /tmp/ai-trader-api.log      2>&1 & echo $! > .pids/api.pid
+        sleep 2
         echo ""
-        echo "Infrastructure is up. Run each service in a separate terminal:"
-        echo "  go run ./cmd/feeder"
-        echo "  go run ./cmd/signal"
-        echo "  go run ./cmd/executor"
-        echo "  go run ./cmd/api"
+        echo "All services running:"
+        echo "  Dashboard:   http://localhost:8080"
+        echo "  Grafana:     http://localhost:3010  (admin/admin)"
+        echo ""
+        echo "  task logs:local   — tail all logs"
+        echo "  task dev:stop     — stop everything"
         echo ""
 
-  down:
-    desc: Stop all containers and remove orphans
+  dev:stop-local:
+    desc: Stop locally running Go services
+    internal: true
     cmds:
+      - |
+        for svc in feeder signal executor api; do
+          if [ -f .pids/$svc.pid ]; then
+            pid=$(cat .pids/$svc.pid)
+            kill $pid 2>/dev/null && echo "stopped $svc (pid $pid)" || true
+            rm -f .pids/$svc.pid
+          fi
+        done
+
+  down:
+    desc: Stop everything (Docker containers + local Go services)
+    cmds:
+      - task: dev:stop-local
       - "{{.COMPOSE}} down --remove-orphans"
+
+  restart:
+    desc: Restart all Go services (keep infra running)
+    cmds:
+      - "{{.COMPOSE}} restart feeder signal executor api"
+      - "{{.COMPOSE}} ps"
+
+  status:
+    desc: Show status of all containers
+    cmds:
+      - "{{.COMPOSE}} ps -a"
 
   # ── Testing ────────────────────────────────────────────────────────
 
@@ -73,6 +124,11 @@ tasks:
     cmds:
       - "{{.COMPOSE}} logs -f --tail=50"
 
+  logs:local:
+    desc: Tail all local Go service logs
+    cmds:
+      - tail -f /tmp/ai-trader-feeder.log /tmp/ai-trader-signal.log /tmp/ai-trader-executor.log /tmp/ai-trader-api.log
+
   logs:feeder:
     desc: Tail feeder logs
     cmds:
@@ -87,6 +143,11 @@ tasks:
     desc: Tail executor logs
     cmds:
       - "{{.COMPOSE}} logs -f executor"
+
+  logs:api:
+    desc: Tail API logs
+    cmds:
+      - "{{.COMPOSE}} logs -f api"
 
   # ── Build ──────────────────────────────────────────────────────────
 
@@ -104,6 +165,32 @@ tasks:
       - "{{.COMPOSE}} build"
 
   # ── Utilities ──────────────────────────────────────────────────────
+
+  telegram:test:
+    desc: Send a test message to Telegram
+    cmds:
+      - |
+        source .env
+        if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+          echo "ERROR: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in .env"
+          exit 1
+        fi
+        echo "Testing Telegram bot..."
+        echo "  Bot token: ${TELEGRAM_BOT_TOKEN:0:10}..."
+        echo "  Chat ID:   $TELEGRAM_CHAT_ID"
+        echo ""
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+          "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"✅ AI Trader test — Telegram is working!\"}")
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "SUCCESS — message sent!"
+        else
+          echo "FAILED (HTTP $HTTP_CODE)"
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+        fi
 
   psql:
     desc: Open a psql shell to TimescaleDB
