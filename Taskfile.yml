@@ -1,0 +1,174 @@
+version: "3"
+
+vars:
+  COMPOSE: docker compose
+
+tasks:
+  # ── Development ────────────────────────────────────────────────────
+
+  dev:
+    desc: Start all services (infra + Go containers)
+    cmds:
+      - "{{.COMPOSE}} up --build -d"
+      - "{{.COMPOSE}} ps"
+
+  dev:infra:
+    desc: Start infrastructure only (TimescaleDB, Redis, Grafana)
+    cmds:
+      - "{{.COMPOSE}} up -d timescaledb redis grafana"
+
+  dev:local:
+    desc: Start infra, then print instructions for running Go locally
+    cmds:
+      - task: dev:infra
+      - |
+        echo ""
+        echo "Infrastructure is up. Run each service in a separate terminal:"
+        echo "  go run ./cmd/feeder"
+        echo "  go run ./cmd/signal"
+        echo "  go run ./cmd/executor"
+        echo "  go run ./cmd/api"
+        echo ""
+
+  down:
+    desc: Stop all containers and remove orphans
+    cmds:
+      - "{{.COMPOSE}} down --remove-orphans"
+
+  # ── Testing ────────────────────────────────────────────────────────
+
+  test:
+    desc: Run all Go tests
+    cmds:
+      - go test ./... -v
+
+  test:short:
+    desc: Run Go tests (short mode, no -v)
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  # ── Backtesting ────────────────────────────────────────────────────
+
+  backtest:
+    desc: Run Python backtest simulation
+    dir: backtest
+    cmds:
+      - python run.py
+
+  optimize:
+    desc: Run parameter optimization grid search
+    dir: backtest
+    cmds:
+      - python optimize.py
+
+  # ── Logs ───────────────────────────────────────────────────────────
+
+  logs:
+    desc: Tail all service logs
+    cmds:
+      - "{{.COMPOSE}} logs -f --tail=50"
+
+  logs:feeder:
+    desc: Tail feeder logs
+    cmds:
+      - "{{.COMPOSE}} logs -f feeder"
+
+  logs:signal:
+    desc: Tail signal engine logs
+    cmds:
+      - "{{.COMPOSE}} logs -f signal"
+
+  logs:executor:
+    desc: Tail executor logs
+    cmds:
+      - "{{.COMPOSE}} logs -f executor"
+
+  # ── Build ──────────────────────────────────────────────────────────
+
+  build:
+    desc: Build all Go binaries locally
+    cmds:
+      - go build -o bin/feeder   ./cmd/feeder
+      - go build -o bin/signal   ./cmd/signal
+      - go build -o bin/executor ./cmd/executor
+      - go build -o bin/api      ./cmd/api
+
+  build:docker:
+    desc: Build the Docker image
+    cmds:
+      - "{{.COMPOSE}} build"
+
+  # ── Utilities ──────────────────────────────────────────────────────
+
+  psql:
+    desc: Open a psql shell to TimescaleDB
+    cmds:
+      - "{{.COMPOSE}} exec timescaledb psql -U trader -d trader"
+
+  redis-cli:
+    desc: Open a redis-cli shell
+    cmds:
+      - "{{.COMPOSE}} exec redis redis-cli"
+
+  # ── Data management ─────────────────────────────────────────────────
+
+  db:stats:
+    desc: Show table sizes, chunk counts, and compression stats
+    cmds:
+      - |
+        {{.COMPOSE}} exec timescaledb psql -U trader -d trader -c "
+          SELECT hypertable_name,
+                 pg_size_pretty(hypertable_size(format('%I', hypertable_name)::regclass)) AS total_size,
+                 pg_size_pretty(pg_total_relation_size(format('%I', hypertable_name)::regclass) -
+                                hypertable_size(format('%I', hypertable_name)::regclass)) AS index_size
+          FROM timescaledb_information.hypertables
+          ORDER BY hypertable_name;
+        " -c "
+          SELECT hypertable_name,
+                 count(*) AS chunks,
+                 count(*) FILTER (WHERE is_compressed) AS compressed
+          FROM timescaledb_information.chunks
+          GROUP BY hypertable_name
+          ORDER BY hypertable_name;
+        " -c "
+          SELECT 'candles' AS tbl, count(*) FROM candles
+          UNION ALL
+          SELECT 'signals', count(*) FROM signals
+          UNION ALL
+          SELECT 'trades', count(*) FROM trades;
+        "
+
+  db:retention:
+    desc: Manually drop old chunks (candles >60d, signals >180d)
+    cmds:
+      - |
+        {{.COMPOSE}} exec timescaledb psql -U trader -d trader -c "
+          SELECT drop_chunks('candles',  older_than => INTERVAL '60 days');
+          SELECT drop_chunks('signals',  older_than => INTERVAL '180 days');
+        "
+
+  db:compress:
+    desc: Manually compress chunks older than 7 days
+    cmds:
+      - |
+        {{.COMPOSE}} exec timescaledb psql -U trader -d trader -c "
+          SELECT compress_chunk(c.chunk_name)
+          FROM timescaledb_information.chunks c
+          WHERE c.hypertable_name IN ('candles', 'signals')
+            AND NOT c.is_compressed
+            AND c.range_end < now() - INTERVAL '7 days';
+        "
+
+  db:purge:
+    desc: Delete ALL data from candles, signals, and trades (destructive!)
+    prompt: "This will delete ALL trading data. Are you sure?"
+    cmds:
+      - |
+        {{.COMPOSE}} exec timescaledb psql -U trader -d trader -c "
+          TRUNCATE candles, signals, trades;
+        "

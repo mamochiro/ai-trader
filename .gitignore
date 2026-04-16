@@ -1,0 +1,32 @@
+# Env & secrets
+.env
+.env.local
+*.pem
+
+# Go build artifacts
+/bin/
+/dist/
+*.test
+*.out
+/api
+/executor
+/feeder
+/signal
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Python backtest
+backtest/__pycache__/
+backtest/.venv/
+backtest/results/*.png
+backtest/results/*.csv
+!backtest/results/.gitkeep
+*.pyc
+
+# Dev scripts with secrets
+test_api.sh
+
+# Docker volumes (managed by compose)

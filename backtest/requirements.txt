@@ -1,0 +1,6 @@
+vectorbt>=0.25
+pandas>=2.0
+numpy>=1.26
+ccxt>=4.0
+python-dotenv>=1.0
+matplotlib>=3.8

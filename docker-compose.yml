@@ -1,0 +1,140 @@
+services:
+  # ── Infrastructure ──────────────────────────────────────────────────
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ai-trader-timescaledb
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      POSTGRES_DB: trader
+    ports:
+      - "5434:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trader"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-trader-redis
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: ai-trader-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3010:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # ── Go services ────────────────────────────────────────────────────
+
+  feeder:
+    build: .
+    container_name: ai-trader-feeder
+    command: feeder
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  signal:
+    build: .
+    container_name: ai-trader-signal
+    command: signal
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      feeder:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  executor:
+    build: .
+    container_name: ai-trader-executor
+    command: executor
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      signal:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  api:
+    build: .
+    container_name: ai-trader-api
+    command: api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_URL: postgres://trader:trader@timescaledb:5432/trader?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8080:8080"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  timescale_data:
+  redis_data:
+  grafana_data:
