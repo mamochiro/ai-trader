@@ -84,6 +84,15 @@ func main() {
 		writeJSON(w, map[string]any{"asset": asset, "free": bal})
 	})
 
+	mux.HandleFunc("GET /api/balances", func(w http.ResponseWriter, r *http.Request) {
+		balances, err := ex.GetAllBalances(r.Context())
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, balances)
+	})
+
 	mux.HandleFunc("GET /api/candles", func(w http.ResponseWriter, r *http.Request) {
 		symbol := queryDefault(r, "symbol", "BTCUSDT")
 		interval := queryDefault(r, "interval", "15m")
@@ -120,12 +129,51 @@ func main() {
 
 	mux.HandleFunc("GET /api/stats", func(w http.ResponseWriter, r *http.Request) {
 		symbol := queryDefault(r, "symbol", "BTCUSDT")
-		stats, err := queryStats(r.Context(), pool, symbol)
+		stats, err := queryStats(r.Context(), pool, symbol, portfolio)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
 		writeJSON(w, stats)
+	})
+
+	mux.HandleFunc("GET /api/open-position", func(w http.ResponseWriter, r *http.Request) {
+		symbol := queryDefault(r, "symbol", "BTCUSDT")
+		pos, err := queryOpenPosition(r.Context(), pool, symbol)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, pos)
+	})
+
+	mux.HandleFunc("GET /api/price", func(w http.ResponseWriter, r *http.Request) {
+		symbol := queryDefault(r, "symbol", "BTCUSDT")
+		now, prev, err := queryPriceChange(r.Context(), pool, symbol)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		change := 0.0
+		if prev > 0 {
+			change = ((now - prev) / prev) * 100
+		}
+		writeJSON(w, map[string]any{
+			"price":      now,
+			"prev_24h":   prev,
+			"change_pct": change,
+		})
+	})
+
+	mux.HandleFunc("GET /api/signals/chart", func(w http.ResponseWriter, r *http.Request) {
+		symbol := queryDefault(r, "symbol", "BTCUSDT")
+		limit := queryInt(r, "limit", 100)
+		signals, err := querySignalsForChart(r.Context(), pool, symbol, limit)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, signals)
 	})
 
 	mux.HandleFunc("GET /api/position", func(w http.ResponseWriter, r *http.Request) {

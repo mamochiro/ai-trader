@@ -76,6 +76,34 @@ func (b *BinanceClient) GetBalance(ctx context.Context, asset string) (float64, 
 	return 0, nil
 }
 
+// AssetBalance holds one asset's free + locked balance.
+type AssetBalance struct {
+	Asset  string  `json:"asset"`
+	Free   float64 `json:"free"`
+	Locked float64 `json:"locked"`
+}
+
+// GetAllBalances returns all spot assets with non-zero balance.
+func (b *BinanceClient) GetAllBalances(ctx context.Context) ([]AssetBalance, error) {
+	acct, err := b.c.NewGetAccountService().Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get account: %w", err)
+	}
+	var out []AssetBalance
+	for _, bal := range acct.Balances {
+		free, _ := strconv.ParseFloat(bal.Free, 64)
+		locked, _ := strconv.ParseFloat(bal.Locked, 64)
+		if free > 0 || locked > 0 {
+			out = append(out, AssetBalance{
+				Asset:  bal.Asset,
+				Free:   free,
+				Locked: locked,
+			})
+		}
+	}
+	return out, nil
+}
+
 // GetTickerPrice returns the last traded price for a symbol.
 func (b *BinanceClient) GetTickerPrice(ctx context.Context, symbol string) (float64, error) {
 	prices, err := b.c.NewListPricesService().Symbol(symbol).Do(ctx)

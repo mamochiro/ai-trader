@@ -26,13 +26,14 @@ func ensureSignalsSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	const createTable = `
 CREATE TABLE IF NOT EXISTS signals (
   time       TIMESTAMPTZ NOT NULL,
-  symbol     TEXT,
+  symbol     TEXT NOT NULL,
   action     TEXT,
   score      NUMERIC,
   reason     TEXT,
   rsi        NUMERIC,
   macd       NUMERIC,
-  sentiment  INTEGER
+  sentiment  INTEGER,
+  UNIQUE (symbol, time)
 )`
 	if _, err := pool.Exec(ctx, createTable); err != nil {
 		return err
@@ -56,15 +57,21 @@ CREATE TABLE IF NOT EXISTS signals (
 	return nil
 }
 
-func insertSignal(ctx context.Context, pool *pgxpool.Pool, s Signal) error {
+// insertSignal writes one signal row. Returns true if the row was
+// actually inserted (false if it was a duplicate).
+func insertSignal(ctx context.Context, pool *pgxpool.Pool, s Signal) (bool, error) {
 	const q = `
 INSERT INTO signals (time, symbol, action, score, reason, rsi, macd, sentiment)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err := pool.Exec(ctx, q,
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (symbol, time) DO NOTHING`
+	tag, err := pool.Exec(ctx, q,
 		s.Time, s.Symbol, s.Action, s.Score, s.Reason,
 		s.RSI, s.MACD, s.Sentiment,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // loadCandles fetches the most recent candles from TimescaleDB,

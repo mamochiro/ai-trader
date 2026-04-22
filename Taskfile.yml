@@ -38,14 +38,25 @@ tasks:
     cmds:
       - task: dev:infra
       - task: dev:stop-local
+      - task: build
       - |
+        # Guard: abort if any ai-trader service is still running
+        ALIVE=$(pgrep -xf './bin/(feeder|signal|executor|api)' 2>/dev/null | wc -l | tr -d ' ')
+        ALIVE_CACHE=$(pgrep -f 'go-build.*/(feeder|signal|executor|api)$' 2>/dev/null | wc -l | tr -d ' ')
+        TOTAL=$((ALIVE + ALIVE_CACHE))
+        if [ "$TOTAL" -gt 0 ]; then
+          echo "ERROR: $TOTAL process(es) still running after stop. Aborting."
+          pgrep -alf './bin/(feeder|signal|executor|api)' 2>/dev/null || true
+          pgrep -af 'go-build.*/(feeder|signal|executor|api)$' 2>/dev/null || true
+          exit 1
+        fi
         echo "Starting Go services locally..."
         mkdir -p .pids
-        nohup go run ./cmd/feeder   > /tmp/ai-trader-feeder.log   2>&1 & echo $! > .pids/feeder.pid
+        nohup ./bin/feeder   > /tmp/ai-trader-feeder.log   2>&1 & echo $! > .pids/feeder.pid
         sleep 2
-        nohup go run ./cmd/signal   > /tmp/ai-trader-signal.log   2>&1 & echo $! > .pids/signal.pid
-        nohup go run ./cmd/executor > /tmp/ai-trader-executor.log 2>&1 & echo $! > .pids/executor.pid
-        nohup go run ./cmd/api      > /tmp/ai-trader-api.log      2>&1 & echo $! > .pids/api.pid
+        nohup ./bin/signal   > /tmp/ai-trader-signal.log   2>&1 & echo $! > .pids/signal.pid
+        nohup ./bin/executor > /tmp/ai-trader-executor.log 2>&1 & echo $! > .pids/executor.pid
+        nohup ./bin/api      > /tmp/ai-trader-api.log      2>&1 & echo $! > .pids/api.pid
         sleep 2
         echo ""
         echo "All services running:"
@@ -62,12 +73,33 @@ tasks:
     cmds:
       - |
         for svc in feeder signal executor api; do
+          # Kill by PID file
           if [ -f .pids/$svc.pid ]; then
             pid=$(cat .pids/$svc.pid)
             kill $pid 2>/dev/null && echo "stopped $svc (pid $pid)" || true
             rm -f .pids/$svc.pid
           fi
+          # Kill ALL matching processes
+          pkill -f "go run ./cmd/$svc" 2>/dev/null || true
+          pkill -xf "./bin/$svc" 2>/dev/null || true
+          pkill -f "go-build.*/$svc\$" 2>/dev/null || true
         done
+        sleep 1
+        # Verify nothing survived
+        REMAINING=$(pgrep -xf './bin/(feeder|signal|executor|api)' 2>/dev/null | wc -l | tr -d ' ')
+        REMAINING_CACHE=$(pgrep -f 'go-build.*/(feeder|signal|executor|api)$' 2>/dev/null | wc -l | tr -d ' ')
+        TOTAL=$((REMAINING + REMAINING_CACHE))
+        if [ "$TOTAL" -gt 0 ]; then
+          echo "WARNING: $TOTAL process(es) still alive, force killing..."
+          pgrep -xf './bin/(feeder|signal|executor|api)' 2>/dev/null | xargs kill -9 2>/dev/null || true
+          pgrep -f 'go-build.*/(feeder|signal|executor|api)$' 2>/dev/null | xargs kill -9 2>/dev/null || true
+          sleep 1
+        fi
+
+  dev:stop:
+    desc: Stop all local Go services only (keep infra running)
+    cmds:
+      - task: dev:stop-local
 
   down:
     desc: Stop everything (Docker containers + local Go services)
@@ -165,6 +197,17 @@ tasks:
       - "{{.COMPOSE}} build"
 
   # ── Utilities ──────────────────────────────────────────────────────
+
+  db:check-dup:
+    desc: Check for duplicate signals
+    cmds:
+      - |
+        {{.COMPOSE}} exec timescaledb psql -U trader -d trader -c "
+          SELECT time AT TIME ZONE 'Asia/Bangkok' AS time_bkk, action, score, count(*)
+          FROM signals WHERE symbol='BTCUSDT'
+          GROUP BY time, action, score
+          ORDER BY time DESC LIMIT 10;
+        "
 
   telegram:test:
     desc: Send a test message to Telegram

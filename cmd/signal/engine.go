@@ -62,8 +62,9 @@ func (e *SignalEngine) handleCandle(ctx context.Context, payload string) {
 		return
 	}
 
-	// Skip candles already processed (e.g. reconnect backfill duplicates).
-	if candle.OpenTime.Equal(e.lastCandleTime) {
+	// Skip candles already processed or older than the last one we saw
+	// (e.g. reconnect backfill publishes older candles).
+	if !candle.OpenTime.After(e.lastCandleTime) {
 		return
 	}
 	e.lastCandleTime = candle.OpenTime
@@ -103,8 +104,10 @@ func (e *SignalEngine) handleCandle(ctx context.Context, payload string) {
 	)
 
 	// 5. Log to signals table (all decisions, including HOLD).
+	// Truncate to 15m boundary so the unique constraint (symbol, time)
+	// prevents duplicates regardless of exact candle timestamp.
 	sig := Signal{
-		Time:      time.Now(),
+		Time:      candle.OpenTime.Truncate(15 * time.Minute),
 		Symbol:    e.symbol,
 		Action:    decision.Action,
 		Score:     decision.TotalScore,
@@ -113,8 +116,14 @@ func (e *SignalEngine) handleCandle(ctx context.Context, payload string) {
 		MACD:      summary.MACD.Histogram,
 		Sentiment: sentResult.Score,
 	}
-	if err := insertSignal(ctx, e.db, sig); err != nil {
+	inserted, err := insertSignal(ctx, e.db, sig)
+	if err != nil {
 		e.logger.Error("failed to log signal", "err", err)
+		return
+	}
+	if !inserted {
+		e.logger.Debug("duplicate signal skipped", "candle_time", candle.OpenTime)
+		return
 	}
 
 	// 6. Publish actionable decisions only.

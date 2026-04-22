@@ -27,7 +27,7 @@
   h1 { font-size: 20px; margin-bottom: 16px; }
   .grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 12px;
     margin-bottom: 16px;
   }
@@ -46,6 +46,11 @@
   .card .value {
     font-size: 24px;
     font-weight: 600;
+  }
+  .card .sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
   }
   .positive { color: var(--green); }
   .negative { color: var(--red); }
@@ -125,6 +130,32 @@
   }
   .indicator-card .value { font-size: 20px; font-weight: 600; }
   .indicator-card .label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .progress-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .date-header td {
+    color: var(--blue);
+    font-weight: 600;
+    padding: 10px 8px 4px;
+    border: none;
+    font-size: 12px;
+  }
+  .day-summary td {
+    color: var(--muted);
+    font-size: 11px;
+    padding: 2px 8px 8px;
+    border: none;
+    font-style: italic;
+  }
 </style>
 </head>
 <body>
@@ -136,12 +167,47 @@
   </div>
 </div>
 
+<!-- Spot Balances -->
+<div class="card" style="margin-bottom:16px">
+  <h3>Spot Balances</h3>
+  <div id="spot-balances" style="display:flex;gap:24px;flex-wrap:wrap;margin-top:8px">
+    <span class="neutral">Loading...</span>
+  </div>
+</div>
+
 <!-- Stats cards -->
-<div class="grid" id="stats-grid">
-  <div class="card"><h3>Portfolio</h3><div class="value" id="stat-portfolio">--</div></div>
-  <div class="card"><h3>BTC Position</h3><div class="value" id="stat-btc">--</div></div>
-  <div class="card"><h3>Total P&L</h3><div class="value" id="stat-pnl">--</div></div>
-  <div class="card"><h3>Win Rate</h3><div class="value" id="stat-winrate">--</div></div>
+<div class="grid">
+  <div class="card">
+    <h3>BTC Price</h3>
+    <div class="value" id="stat-price">--</div>
+    <div class="sub" id="stat-price-change">--</div>
+  </div>
+  <div class="card">
+    <h3>Portfolio</h3>
+    <div class="value" id="stat-portfolio">--</div>
+    <div class="sub" id="stat-portfolio-sub">--</div>
+  </div>
+  <div class="card">
+    <h3>Open Position</h3>
+    <div class="value" id="stat-position">--</div>
+    <div class="sub" id="stat-position-sub">--</div>
+  </div>
+  <div class="card">
+    <h3>Today P&L</h3>
+    <div class="value" id="stat-today-pnl">--</div>
+    <div class="sub" id="stat-daily-loss">--</div>
+    <div class="progress-bar"><div class="fill" id="daily-loss-bar" style="width:0%;background:var(--green)"></div></div>
+  </div>
+  <div class="card">
+    <h3>Total P&L</h3>
+    <div class="value" id="stat-pnl">--</div>
+    <div class="sub" id="stat-trades-count">--</div>
+  </div>
+  <div class="card">
+    <h3>Win Rate</h3>
+    <div class="value" id="stat-winrate">--</div>
+    <div class="sub" id="stat-winrate-sub">--</div>
+  </div>
 </div>
 
 <!-- Latest indicators -->
@@ -186,7 +252,13 @@
 
 <script>
 const API = '';
+const TZ_OFFSET = new Date().getTimezoneOffset() * 60; // seconds to add for local time
 let chart, candleSeries, volumeSeries;
+
+// Convert ISO time string to local-adjusted UTC timestamp for lightweight-charts
+function toChartTime(isoStr) {
+  return Math.floor(new Date(isoStr).getTime() / 1000) - TZ_OFFSET;
+}
 
 function initChart() {
   const container = document.getElementById('chart-container');
@@ -220,31 +292,100 @@ async function fetchJSON(url) {
   return res.json();
 }
 
+function fmtUSD(n) {
+  return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function loadBalances() {
+  try {
+    const balances = await fetchJSON(API + '/api/balances');
+    const container = document.getElementById('spot-balances');
+    if (!balances || balances.error) {
+      container.innerHTML = '<span class="neutral">Unavailable</span>';
+      return;
+    }
+    container.innerHTML = balances.map(b => {
+      const total = b.free + b.locked;
+      const locked = b.locked > 0 ? ` <span class="neutral">(${b.locked.toFixed(6)} locked)</span>` : '';
+      return `<div style="min-width:120px">
+        <div style="font-size:18px;font-weight:600">${total < 0.01 ? total.toFixed(8) : total.toFixed(4)}</div>
+        <div style="font-size:12px;color:var(--muted)">${b.asset}${locked}</div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.error('balances:', e); }
+}
+
+async function loadPrice() {
+  try {
+    const p = await fetchJSON(API + '/api/price');
+    if (p.error) return;
+    document.getElementById('stat-price').textContent = fmtUSD(p.price);
+    const changeEl = document.getElementById('stat-price-change');
+    const sign = p.change_pct >= 0 ? '+' : '';
+    changeEl.textContent = sign + p.change_pct.toFixed(2) + '% (24h)';
+    changeEl.className = 'sub ' + (p.change_pct >= 0 ? 'positive' : 'negative');
+  } catch (e) { console.error('price:', e); }
+}
+
 async function loadPosition() {
   try {
     const pos = await fetchJSON(API + '/api/position');
     if (pos.error) { console.error('position:', pos.error); return; }
     const liveTag = pos.live ? '' : ' (est)';
-    document.getElementById('stat-portfolio').textContent = '$' + pos.total_usdt.toFixed(2) + liveTag;
-    document.getElementById('stat-btc').textContent = pos.base.toFixed(5) + ' ' + pos.base_asset;
-    document.getElementById('stat-btc').className = 'value ' + (pos.base > 0 ? 'positive' : 'neutral');
-  } catch (e) {
-    console.error('position error:', e);
-  }
+    document.getElementById('stat-portfolio').textContent = fmtUSD(pos.total_usdt) + liveTag;
+    document.getElementById('stat-portfolio-sub').textContent =
+      pos.base.toFixed(5) + ' ' + pos.base_asset + ' + ' + fmtUSD(pos.usdt) + ' USDT';
+  } catch (e) { console.error('position:', e); }
+}
+
+async function loadOpenPosition() {
+  try {
+    const p = await fetchJSON(API + '/api/open-position');
+    const valEl = document.getElementById('stat-position');
+    const subEl = document.getElementById('stat-position-sub');
+    if (!p.active) {
+      valEl.textContent = 'None';
+      valEl.className = 'value neutral';
+      subEl.textContent = 'No active trade';
+    } else {
+      valEl.textContent = p.action + ' @ ' + fmtUSD(p.entry_price);
+      valEl.className = 'value ' + (p.action === 'BUY' ? 'positive' : 'negative');
+      subEl.textContent = 'SL ' + fmtUSD(p.stop_loss) + ' / TP ' + fmtUSD(p.take_profit);
+    }
+  } catch (e) { console.error('open-position:', e); }
 }
 
 async function loadStats() {
   try {
     const s = await fetchJSON(API + '/api/stats');
     if (s.error) { console.error('stats:', s.error); return; }
+
+    // Total P&L
     const pnlEl = document.getElementById('stat-pnl');
-    pnlEl.textContent = (s.total_pnl >= 0 ? '+' : '') + '$' + s.total_pnl.toFixed(2);
+    pnlEl.textContent = (s.total_pnl >= 0 ? '+' : '') + fmtUSD(s.total_pnl);
     pnlEl.className = 'value ' + (s.total_pnl >= 0 ? 'positive' : 'negative');
+    document.getElementById('stat-trades-count').textContent =
+      s.total_trades + ' trades (' + s.open_trades + ' open)';
+
+    // Today P&L
+    const todayEl = document.getElementById('stat-today-pnl');
+    todayEl.textContent = (s.today_pnl >= 0 ? '+' : '') + fmtUSD(s.today_pnl);
+    todayEl.className = 'value ' + (s.today_pnl >= 0 ? 'positive' : 'negative');
+
+    // Daily loss bar (8% limit)
+    const pct = Math.min(s.daily_loss_pct, 8);
+    const bar = document.getElementById('daily-loss-bar');
+    bar.style.width = (pct / 8 * 100) + '%';
+    bar.style.background = pct >= 6 ? 'var(--red)' : pct >= 3 ? 'var(--yellow)' : 'var(--green)';
+    document.getElementById('stat-daily-loss').textContent =
+      'Daily loss: ' + s.daily_loss_pct.toFixed(1) + '% / 8% limit';
+
+    // Win rate
     document.getElementById('stat-winrate').textContent =
       s.total_trades > 0 ? s.win_rate.toFixed(1) + '%' : 'N/A';
-  } catch (e) {
-    console.error('stats error:', e);
-  }
+    document.getElementById('stat-winrate-sub').textContent =
+      s.wins + 'W / ' + s.losses + 'L';
+  } catch (e) { console.error('stats:', e); }
 }
 
 async function loadCandles() {
@@ -252,24 +393,35 @@ async function loadCandles() {
     const candles = await fetchJSON(API + '/api/candles?interval=15m&limit=200');
     if (!candles || candles.length === 0) return;
     const ohlc = candles.map(c => ({
-      time: Math.floor(new Date(c.time).getTime() / 1000),
+      time: toChartTime(c.time),
       open: c.open, high: c.high, low: c.low, close: c.close,
     }));
     const vol = candles.map(c => ({
-      time: Math.floor(new Date(c.time).getTime() / 1000),
+      time: toChartTime(c.time),
       value: c.volume,
       color: c.close >= c.open ? 'rgba(63,185,80,0.3)' : 'rgba(248,81,73,0.3)',
     }));
     candleSeries.setData(ohlc);
     volumeSeries.setData(vol);
-  } catch (e) {
-    console.error('candles error:', e);
-  }
+
+    // Load signal markers
+    const signals = await fetchJSON(API + '/api/signals/chart?limit=100');
+    if (signals && signals.length > 0) {
+      const markers = signals.map(s => ({
+        time: toChartTime(s.time),
+        position: s.action === 'BUY' ? 'belowBar' : 'aboveBar',
+        color: s.action === 'BUY' ? '#3fb950' : '#f85149',
+        shape: s.action === 'BUY' ? 'arrowUp' : 'arrowDown',
+        text: s.action,
+      })).sort((a, b) => a.time - b.time);
+      candleSeries.setMarkers(markers);
+    }
+  } catch (e) { console.error('candles:', e); }
 }
 
 async function loadSignals() {
   try {
-    const signals = await fetchJSON(API + '/api/signals?limit=20');
+    const signals = await fetchJSON(API + '/api/signals?limit=50');
     const tbody = document.getElementById('signals-body');
     tbody.innerHTML = '';
     if (!signals) return;
@@ -294,48 +446,87 @@ async function loadSignals() {
       document.getElementById('ind-sent-label').textContent =
         latest.sentiment > 0 ? 'Bullish' : latest.sentiment < 0 ? 'Bearish' : 'Neutral';
     }
+    let lastDate = '';
     signals.forEach(s => {
+      const d = new Date(s.time);
+      const dateStr = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      if (dateStr !== lastDate) {
+        lastDate = dateStr;
+        const hdr = document.createElement('tr');
+        hdr.className = 'date-header';
+        hdr.innerHTML = `<td colspan="5">${dateStr}</td>`;
+        tbody.appendChild(hdr);
+      }
       const tr = document.createElement('tr');
       const badge = s.action === 'BUY' ? 'badge-buy' : s.action === 'SELL' ? 'badge-sell' : 'badge-hold';
       tr.innerHTML = `
-        <td>${new Date(s.time).toLocaleTimeString()}</td>
+        <td>${d.toLocaleTimeString()}</td>
         <td><span class="badge ${badge}">${s.action}</span></td>
         <td>${s.score.toFixed(2)}</td>
         <td>${s.rsi.toFixed(1)}</td>
         <td>${s.sentiment}</td>`;
       tbody.appendChild(tr);
     });
-  } catch (e) {
-    console.error('signals error:', e);
-  }
+  } catch (e) { console.error('signals:', e); }
 }
 
 async function loadTrades() {
   try {
-    const trades = await fetchJSON(API + '/api/trades?limit=20');
+    const trades = await fetchJSON(API + '/api/trades?limit=50');
     const tbody = document.getElementById('trades-body');
     tbody.innerHTML = '';
     if (!trades) return;
-    trades.forEach(t => {
+    let lastTradeDate = '';
+    let dayPnL = 0;
+    let dayRows = [];
+
+    function flushDaySummary() {
+      if (dayRows.length > 0 && dayPnL !== 0) {
+        const summaryTr = document.createElement('tr');
+        summaryTr.className = 'day-summary';
+        const cls = dayPnL > 0 ? 'positive' : 'negative';
+        summaryTr.innerHTML = `<td colspan="6" class="${cls}">Day P&L: ${dayPnL > 0 ? '+' : ''}${fmtUSD(dayPnL)}</td>`;
+        // Insert after the date header (before first trade row)
+        const header = dayRows[0];
+        header.parentNode.insertBefore(summaryTr, header.nextSibling);
+      }
+    }
+
+    trades.forEach((t, i) => {
+      const d = new Date(t.time);
+      const dateStr = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      if (dateStr !== lastTradeDate) {
+        flushDaySummary();
+        lastTradeDate = dateStr;
+        dayPnL = 0;
+        dayRows = [];
+        const hdr = document.createElement('tr');
+        hdr.className = 'date-header';
+        hdr.innerHTML = `<td colspan="6">${dateStr}</td>`;
+        tbody.appendChild(hdr);
+        dayRows.push(hdr);
+      }
+      dayPnL += t.pnl;
       const tr = document.createElement('tr');
       const badge = t.action === 'BUY' ? 'badge-buy' : 'badge-sell';
       const pnlClass = t.pnl > 0 ? 'positive' : t.pnl < 0 ? 'negative' : '';
       tr.innerHTML = `
-        <td>${new Date(t.time).toLocaleTimeString()}</td>
+        <td>${d.toLocaleTimeString()}</td>
         <td><span class="badge ${badge}">${t.action}</span></td>
-        <td>$${t.entry_price.toFixed(2)}</td>
+        <td>${fmtUSD(t.entry_price)}</td>
         <td>${t.quantity.toFixed(5)}</td>
         <td>${t.status}</td>
-        <td class="${pnlClass}">${t.pnl !== 0 ? (t.pnl > 0 ? '+' : '') + '$' + t.pnl.toFixed(2) : '--'}</td>`;
+        <td class="${pnlClass}">${t.pnl !== 0 ? (t.pnl > 0 ? '+' : '') + fmtUSD(t.pnl) : '--'}</td>`;
       tbody.appendChild(tr);
+
+      // Flush last group
+      if (i === trades.length - 1) flushDaySummary();
     });
-  } catch (e) {
-    console.error('trades error:', e);
-  }
+  } catch (e) { console.error('trades:', e); }
 }
 
 async function loadAll() {
-  await Promise.all([loadPosition(), loadStats(), loadCandles(), loadSignals(), loadTrades()]);
+  await Promise.all([loadBalances(), loadPrice(), loadPosition(), loadOpenPosition(), loadStats(), loadCandles(), loadSignals(), loadTrades()]);
   document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
 }
 
