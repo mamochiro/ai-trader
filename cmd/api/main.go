@@ -180,21 +180,27 @@ func main() {
 		symbol := queryDefault(r, "symbol", "BTCUSDT")
 		baseAsset := exchange.BaseAsset(symbol)
 
-		// Try Binance API for live balance; fall back to DB price
-		// so the dashboard still shows something useful when the
-		// API key doesn't work from inside Docker.
-		var base, usdt, price float64
+		// Read free + locked so the dashboard reflects the real portfolio,
+		// including funds locked in open OCO brackets.
+		var baseFree, baseLocked, usdtFree, usdtLocked, price float64
 		var balanceErr error
 
-		base, balanceErr = ex.GetBalance(r.Context(), baseAsset)
+		balances, balanceErr := ex.GetAllBalances(r.Context())
 		if balanceErr != nil {
 			logger.Warn("binance balance unavailable, using DB fallback", "err", balanceErr)
-			base = 0
+		} else {
+			for _, b := range balances {
+				switch b.Asset {
+				case baseAsset:
+					baseFree, baseLocked = b.Free, b.Locked
+				case "USDT":
+					usdtFree, usdtLocked = b.Free, b.Locked
+				}
+			}
 		}
 
 		price, err = ex.GetTickerPrice(r.Context(), symbol)
 		if err != nil {
-			// Fall back to the latest candle close price from DB.
 			dbPrice, dbErr := queryLastPrice(r.Context(), pool, symbol)
 			if dbErr != nil {
 				writeErr(w, fmt.Errorf("binance: %w; db fallback: %w", err, dbErr))
@@ -203,21 +209,28 @@ func main() {
 			price = dbPrice
 		}
 
-		usdt, _ = ex.GetBalance(r.Context(), "USDT")
-		// If balance calls failed, estimate from portfolio env.
 		if balanceErr != nil {
-			usdt = portfolio
+			usdtFree = portfolio
 		}
 
+		baseTotal := baseFree + baseLocked
+		usdtTotal := usdtFree + usdtLocked
+		lockedValueUSDT := baseLocked*price + usdtLocked
+
 		writeJSON(w, map[string]any{
-			"symbol":      symbol,
-			"base_asset":  baseAsset,
-			"base":        base,
-			"base_value":  base * price,
-			"usdt":        usdt,
-			"total_usdt":  usdt + base*price,
-			"price":       price,
-			"live":        balanceErr == nil,
+			"symbol":            symbol,
+			"base_asset":        baseAsset,
+			"base":              baseTotal,
+			"base_free":         baseFree,
+			"base_locked":       baseLocked,
+			"base_value":        baseTotal * price,
+			"usdt":              usdtTotal,
+			"usdt_free":         usdtFree,
+			"usdt_locked":       usdtLocked,
+			"total_usdt":        usdtTotal + baseTotal*price,
+			"locked_value_usdt": lockedValueUSDT,
+			"price":             price,
+			"live":              balanceErr == nil,
 		})
 	})
 
@@ -225,8 +238,12 @@ func main() {
 	staticSub, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("GET /", http.FileServer(http.FS(staticSub)))
 
+	addr := ":8080"
+	if v := os.Getenv("API_PORT"); v != "" {
+		addr = ":" + v
+	}
 	srv := &http.Server{
-		Addr:              ":8080",
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}

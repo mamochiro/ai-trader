@@ -182,6 +182,17 @@ func (b *BinanceClient) GetOpenOrders(ctx context.Context, symbol string) (int, 
 	return len(orders), nil
 }
 
+// CancelOpenOrders cancels all active orders for a symbol, including
+// both legs of any OCO bracket. Needed before a SELL-to-close so the
+// base asset locked by the bracket is released for the market sell.
+func (b *BinanceClient) CancelOpenOrders(ctx context.Context, symbol string) error {
+	_, err := b.c.NewCancelOpenOrdersService().Symbol(symbol).Do(ctx)
+	if err != nil {
+		return fmt.Errorf("cancel open orders: %w", err)
+	}
+	return nil
+}
+
 // PlaceOCOOrder places a one-cancels-the-other bracket exit order.
 // Price is the take-profit limit, StopPrice triggers the stop, and
 // StopLimitPrice is the limit after the stop fires (set slightly

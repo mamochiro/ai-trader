@@ -333,8 +333,18 @@ async function loadPosition() {
     if (pos.error) { console.error('position:', pos.error); return; }
     const liveTag = pos.live ? '' : ' (est)';
     document.getElementById('stat-portfolio').textContent = fmtUSD(pos.total_usdt) + liveTag;
-    document.getElementById('stat-portfolio-sub').textContent =
-      pos.base.toFixed(5) + ' ' + pos.base_asset + ' + ' + fmtUSD(pos.usdt) + ' USDT';
+
+    const sub = document.getElementById('stat-portfolio-sub');
+    const baseStr = pos.base.toFixed(5) + ' ' + pos.base_asset;
+    const usdtStr = fmtUSD(pos.usdt) + ' USDT';
+    if (pos.locked_value_usdt > 0) {
+      sub.innerHTML =
+        baseStr + ' + ' + usdtStr +
+        '<br><span style="color:var(--muted)">Locked in order: ' +
+        fmtUSD(pos.locked_value_usdt) + '</span>';
+    } else {
+      sub.textContent = baseStr + ' + ' + usdtStr;
+    }
   } catch (e) { console.error('position:', e); }
 }
 
